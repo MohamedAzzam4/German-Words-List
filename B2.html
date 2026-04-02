@@ -109,6 +109,10 @@
         .trophy-desc { font-size: 0.8rem; color: var(--text-muted); }
         .trophy-badge { position: absolute; top: 10px; right: 10px; font-size: 1.5rem; display: none; }
         .trophy-card.earned .trophy-badge { display: block; }
+        .tier-header { grid-column: 1 / -1; margin: 25px 0 10px; padding-bottom: 8px; border-bottom: 2px solid var(--border); font-size: 1.1rem; color: var(--text-muted); display: flex; align-items: center; gap: 8px; }
+        .tier-header:first-child { margin-top: 0; }
+        .trophy-card.secret-locked { background: var(--surface-hover); border-style: dashed; }
+        .trophy-card.secret-locked .trophy-icon { filter: blur(3px); opacity: 0.4; }
 
         /* Notification Toast */
         #toast { position: fixed; bottom: 20px; right: 20px; background: var(--surface); color: var(--text-main); padding: 16px 24px; border-radius: 8px; box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 0 0 1px var(--warning); transform: translateY(150%); transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1); z-index: 50; display: flex; align-items: center; gap: 12px; }
@@ -319,7 +323,7 @@
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+import { getFirestore, doc, setDoc, getDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
 // B2 VOCABULARY DATABASE (New Format)
 // Format: GroupID||German|English/Arabic|ExampleDE|ExampleEN/AR
@@ -2784,8 +2788,12 @@ const firebaseConfig = {
 
 const app = {
     vocab: [],
-    state: { view: 'glossary', unit: 1, typeFilter: 'all', shuffled: false, fcIndex: 0, currentFcSet: [], darkMode: false },
-    userData: { known: [], sessionCount: 0, trophies: [] },
+    state: { view: 'glossary', unit: 1, typeFilter: 'all', shuffled: false, fcIndex: 0, currentFcSet: [], darkMode: false,
+        sessionStartTime: Date.now(), sessionModes: ['glossary'], sessionErrors: {}, isComeback: false },
+    userData: { known: [], sessionCount: 0, trophies: [],
+        ttsCount: 0, columnHideCount: 0, darkModeToggleCount: 0,
+        studyDates: [], totalStudyTimeMs: 0, flashcardErrors: {},
+        sessionsCompleted: 0, lastStudyDate: null, otherLevelKnown: 0 },
     speechSynth: window.speechSynthesis,
     germanVoice: null,
     
@@ -2886,6 +2894,14 @@ const app = {
                 this.userData.trophies = data.trophies || [];
                 this.userData.sessionCount = data.sessionCount || 0;
                 this.state.darkMode = data.darkMode || false;
+                this.userData.ttsCount = data.ttsCount || 0;
+                this.userData.columnHideCount = data.columnHideCount || 0;
+                this.userData.darkModeToggleCount = data.darkModeToggleCount || 0;
+                this.userData.studyDates = data.studyDates || [];
+                this.userData.totalStudyTimeMs = data.totalStudyTimeMs || 0;
+                this.userData.flashcardErrors = data.flashcardErrors || {};
+                this.userData.sessionsCompleted = data.sessionsCompleted || 0;
+                this.userData.lastStudyDate = data.lastStudyDate || null;
             } else {
                 this.saveUserData();
             }
@@ -2896,6 +2912,8 @@ const app = {
             this.updateOverallProgress();
             this.renderSidebar();
             this.applyTheme();
+            this.checkTrophies();
+            if (!this.crossLevelChecked) { this.crossLevelChecked = false; this.checkCrossLevelProgress(); }
             
             if (document.getElementById('unit-list').innerHTML === '') {
                 this.switchUnit(1);
@@ -2918,6 +2936,14 @@ const app = {
                 this.userData.known = parsed.known || [];
                 this.userData.trophies = parsed.trophies || [];
                 this.state.darkMode = parsed.darkMode || false;
+                this.userData.ttsCount = parsed.ttsCount || 0;
+                this.userData.columnHideCount = parsed.columnHideCount || 0;
+                this.userData.darkModeToggleCount = parsed.darkModeToggleCount || 0;
+                this.userData.studyDates = parsed.studyDates || [];
+                this.userData.totalStudyTimeMs = parsed.totalStudyTimeMs || 0;
+                this.userData.flashcardErrors = parsed.flashcardErrors || {};
+                this.userData.sessionsCompleted = parsed.sessionsCompleted || 0;
+                this.userData.lastStudyDate = parsed.lastStudyDate || null;
             }
         } catch (e) { }
         this.applyTheme();
@@ -2939,7 +2965,15 @@ const app = {
                 trophies: this.userData.trophies,
                 sessionCount: this.userData.sessionCount,
                 darkMode: this.state.darkMode,
-                lastUpdated: new Date().toISOString()
+                lastUpdated: new Date().toISOString(),
+                ttsCount: this.userData.ttsCount || 0,
+                columnHideCount: this.userData.columnHideCount || 0,
+                darkModeToggleCount: this.userData.darkModeToggleCount || 0,
+                studyDates: this.userData.studyDates || [],
+                totalStudyTimeMs: this.userData.totalStudyTimeMs || 0,
+                flashcardErrors: this.userData.flashcardErrors || {},
+                sessionsCompleted: this.userData.sessionsCompleted || 0,
+                lastStudyDate: this.userData.lastStudyDate || null
             }, { merge: true }).then(() => {
                 document.getElementById('sync-status').innerText = '☁️ Synced';
             }).catch(e => {
@@ -2950,7 +2984,15 @@ const app = {
             localStorage.setItem('germanB2DataCloud', JSON.stringify({
                 known: this.userData.known,
                 trophies: this.userData.trophies,
-                darkMode: this.state.darkMode
+                darkMode: this.state.darkMode,
+                ttsCount: this.userData.ttsCount || 0,
+                columnHideCount: this.userData.columnHideCount || 0,
+                darkModeToggleCount: this.userData.darkModeToggleCount || 0,
+                studyDates: this.userData.studyDates || [],
+                totalStudyTimeMs: this.userData.totalStudyTimeMs || 0,
+                flashcardErrors: this.userData.flashcardErrors || {},
+                sessionsCompleted: this.userData.sessionsCompleted || 0,
+                lastStudyDate: this.userData.lastStudyDate || null
             }));
         }
         
@@ -3009,8 +3051,10 @@ const app = {
     
     toggleDarkMode() {
         this.state.darkMode = !this.state.darkMode;
+        this.userData.darkModeToggleCount = (this.userData.darkModeToggleCount || 0) + 1;
         this.applyTheme();
         this.saveUserData();
+        this.checkTrophies();
     },
 
     applyTheme() {
@@ -3045,11 +3089,14 @@ const app = {
 
     switchMode(mode) {
         if (mode === 'flashcard') {
+            if (!this.state.sessionModes.includes('flashcard')) this.state.sessionModes.push('flashcard');
             this.buildFlashcardSet();
             this.switchView('flashcard');
         } else {
+            if (!this.state.sessionModes.includes('glossary')) this.state.sessionModes.push('glossary');
             this.switchView('glossary');
         }
+        this.checkTrophies();
     },
 
     setTypeFilter(type) {
@@ -3147,6 +3194,9 @@ const app = {
     },
 
     hideTableColumn(col) {
+        this.userData.columnHideCount = (this.userData.columnHideCount || 0) + 1;
+        this.saveUserData();
+        this.checkTrophies();
         const rows = document.querySelectorAll('#glossary-tbody tr');
         rows.forEach(row => {
             const deWrapper = row.querySelector('.de-wrapper');
@@ -3238,6 +3288,7 @@ const app = {
     markCard(isKnown) {
         const word = this.state.currentFcSet[this.state.fcIndex];
         this.userData.sessionCount++;
+        this.recordStudyDate();
         
         if (isKnown) {
             if (!this.userData.known.includes(word.id)) {
@@ -3245,6 +3296,10 @@ const app = {
             }
         } else {
             this.userData.known = this.userData.known.filter(id => id !== word.id);
+            if (!this.userData.flashcardErrors) this.userData.flashcardErrors = {};
+            this.userData.flashcardErrors[word.id] = (this.userData.flashcardErrors[word.id] || 0) + 1;
+            if (!this.state.sessionErrors) this.state.sessionErrors = {};
+            this.state.sessionErrors[word.id] = (this.state.sessionErrors[word.id] || 0) + 1;
         }
         
         this.saveUserData();
@@ -3253,27 +3308,25 @@ const app = {
         if(this.state.fcIndex < this.state.currentFcSet.length - 1) {
             this.nextCard();
         } else {
+            this.userData.sessionsCompleted = (this.userData.sessionsCompleted || 0) + 1;
+            this.saveUserData();
             this.flipCard(); 
             setTimeout(() => this.showToast("Deck completed! 🎓"), 300);
+            this.checkTrophies();
         }
     },
 
     speak(text) {
         if (!this.speechSynth) return;
         this.speechSynth.cancel(); 
-        
+        this.userData.ttsCount = (this.userData.ttsCount || 0) + 1;
+        this.saveUserData();
         const utterance = new SpeechSynthesisUtterance(this.cleanTextForAudio(text));
-        
-        // Strictly force the language code
         utterance.lang = 'de-DE';
-        
-        // Explicitly attach the German voice profile we found
-        if (this.germanVoice) {
-            utterance.voice = this.germanVoice;
-        }
-        
-        utterance.rate = 0.85; // Slightly slower for clear learning
+        if (this.germanVoice) utterance.voice = this.germanVoice;
+        utterance.rate = 0.85;
         this.speechSynth.speak(utterance);
+        this.checkTrophies();
     },
 
     speakCurrentCard() {
@@ -3346,21 +3399,54 @@ const app = {
     },
 
     trophyDefs: [
-        { id: 'first_steps', icon: '🏅', title: 'First Steps', desc: 'Learn your first 10 B2 words.', req: (app) => app.userData.known.length >= 10 },
-        { id: 'bronze', icon: '🥉', title: 'Bronze Learner', desc: 'Learn 25% of all words.', req: (app) => app.userData.known.length >= app.vocab.length * 0.25 },
-        { id: 'silver', icon: '🥈', title: 'Silver Learner', desc: 'Learn 50% of all words.', req: (app) => app.userData.known.length >= app.vocab.length * 0.50 },
-        { id: 'gold', icon: '🥇', title: 'Gold Learner', desc: 'Learn 75% of all words.', req: (app) => app.userData.known.length >= app.vocab.length * 0.75 },
-        { id: 'session_fire', icon: '🔥', title: 'On Fire', desc: 'Review 50 words in one session.', req: (app) => app.userData.sessionCount >= 50 },
-        { id: 'unit_champ', icon: '🎯', title: 'Module Champion', desc: 'Get 100% in any single module.', req: (app) => {
+        // === 🎯 PROGRESS & MASTERY ===
+        { id: 'first_steps', tier: 'progress', icon: '🏅', title: 'First Steps', desc: 'Learn your first 10 B2 words.', req: (app) => app.userData.known.length >= 10 },
+        { id: 'slay_vocab', tier: 'progress', icon: '💅', title: 'Slay Vocabulary', desc: 'Mark 50 words as known.', req: (app) => app.userData.known.length >= 50 },
+        { id: 'vocab_vault', tier: 'progress', icon: '📚', title: 'Vocabulary Vault', desc: 'Know 100 words.', req: (app) => app.userData.known.length >= 100 },
+        { id: 'walking_dict', tier: 'progress', icon: '📖', title: 'Walking Dictionary', desc: 'Know 500 words.', req: (app) => app.userData.known.length >= 500 },
+        { id: 'bronze', tier: 'progress', icon: '🥉', title: 'Bronze Learner', desc: 'Learn 25% of all words.', req: (app) => app.userData.known.length >= app.vocab.length * 0.25 },
+        { id: 'silver', tier: 'progress', icon: '🥈', title: 'Silver Learner', desc: 'Learn 50% of all words.', req: (app) => app.userData.known.length >= app.vocab.length * 0.50 },
+        { id: 'gold', tier: 'progress', icon: '🥇', title: 'Gold Learner', desc: 'Learn 75% of all words.', req: (app) => app.userData.known.length >= app.vocab.length * 0.75 },
+        { id: 'unit_champ', tier: 'progress', icon: '🎯', title: 'Module Champion', desc: 'Get 100% in any single module.', req: (app) => {
             for(let i=1; i<=68; i++) {
                 const uWords = app.vocab.filter(v=>v.unit===i);
                 if(uWords.length > 0 && uWords.every(v => app.userData.known.includes(v.id))) return true;
             }
             return false;
         }},
-        { id: 'night_owl', icon: '🦉', title: 'Night Owl', desc: 'Study late between 10 PM and 4 AM.', req: (app) => { const h = new Date().getHours(); return app.userData.sessionCount > 5 && (h >= 22 || h < 4); } },
-        { id: 'early_bird', icon: '🌅', title: 'Early Bird', desc: 'Study early between 5 AM and 9 AM.', req: (app) => { const h = new Date().getHours(); return app.userData.sessionCount > 5 && (h >= 5 && h <= 9); } },
-        { id: 'weekend_warrior', icon: '🏕️', title: 'Weekend Warrior', desc: 'Study on a weekend.', req: (app) => { const d = new Date().getDay(); return app.userData.sessionCount > 5 && (d === 0 || d === 6); } }
+        { id: 'b2_boss', tier: 'progress', icon: '👑', title: 'B2 Boss', desc: 'Complete 100% of all B2 modules.', req: (app) => app.userData.known.length >= app.vocab.length && app.vocab.length > 0 },
+        { id: 'verb_master', tier: 'progress', icon: '🏃‍♂️', title: 'Verb Master', desc: 'Learn 30 verbs.', req: (app) => app.userData.known.filter(id => app.vocab.find(v => v.id === id)?.type === 'v').length >= 30 },
+        { id: 'noun_collector', tier: 'progress', icon: '📦', title: 'Noun Collector', desc: 'Learn 50 nouns.', req: (app) => app.userData.known.filter(id => app.vocab.find(v => v.id === id)?.type === 'n').length >= 50 },
+        { id: 'chatterbox', tier: 'progress', icon: '🗣️', title: 'Chatterbox', desc: 'Learn 20 expressions.', req: (app) => app.userData.known.filter(id => app.vocab.find(v => v.id === id)?.type === 'e').length >= 20 },
+        { id: 'mode_explorer', tier: 'progress', icon: '🔀', title: 'Mode Explorer', desc: 'Use glossary and flashcard modes in one session.', req: (app) => app.state.sessionModes && app.state.sessionModes.includes('glossary') && app.state.sessionModes.includes('flashcard') },
+        { id: 'tts_titan', tier: 'progress', icon: '🔊', title: 'TTS Titan', desc: 'Use text-to-speech 100 times.', req: (app) => (app.userData.ttsCount || 0) >= 100 },
+
+        // === 💀 GEN Z / MEME ===
+        { id: 'bro_studied', tier: 'meme', icon: '😤', title: 'Bro Actually Studied', desc: 'Complete your first flashcard session.', req: (app) => (app.userData.sessionsCompleted || 0) >= 1 },
+        { id: 'skibidi_sprecher', tier: 'meme', icon: '🗣️', title: 'Skibidi Sprecher', desc: 'Use text-to-speech 25 times.', req: (app) => (app.userData.ttsCount || 0) >= 25 },
+        { id: 'ohio_behavior', tier: 'meme', icon: '🙈', title: 'Ohio Behavior', desc: 'Hide columns 10 times in glossary mode.', req: (app) => (app.userData.columnHideCount || 0) >= 10 },
+        { id: 'dark_mode_rizz', tier: 'meme', icon: '🌚', title: 'Rizzed Up Dark Mode', desc: 'Switch to dark mode.', req: (app) => app.state.darkMode === true },
+        { id: 'npc_arc', tier: 'meme', icon: '🤖', title: 'NPC Arc', desc: 'Get the same word wrong 10+ times.', req: (app) => Object.values(app.userData.flashcardErrors || {}).some(c => c >= 10) },
+        { id: 'touch_grass', tier: 'meme', icon: '🌱', title: 'Touch Grass', desc: 'Accumulate 3+ hours of total study time.', req: (app) => (app.userData.totalStudyTimeMs || 0) >= 10800000 },
+        { id: 'academic_weapon', tier: 'meme', icon: '🎓', title: 'Academic Weapon', desc: 'Complete 25 flashcard sessions.', req: (app) => (app.userData.sessionsCompleted || 0) >= 25 },
+        { id: 'brain_rot', tier: 'meme', icon: '🧠', title: 'Brain Rot Activated', desc: 'Spend 30 min in flashcards in one sitting.', req: (app) => { if (!app.state.sessionStartTime) return false; return (Date.now() - app.state.sessionStartTime) >= 1800000; }},
+        { id: 'im_cooked', tier: 'meme', icon: '😵', title: 'I Am So Cooked', desc: 'Fail the same card 5 times in one session.', req: (app) => Object.values(app.state.sessionErrors || {}).some(c => c >= 5) },
+        { id: 'session_fire', tier: 'meme', icon: '🔥', title: 'On Fire', desc: 'Review 50 words in one session.', req: (app) => app.userData.sessionCount >= 50 },
+
+        // === 🔥 CONSISTENCY & STREAKS ===
+        { id: 'locked_in', tier: 'streak', icon: '🔒', title: 'Locked TF In', desc: '3-day study streak.', req: (app) => app.getStudyStreak() >= 3 },
+        { id: 'consistency', tier: 'streak', icon: '🔗', title: 'Creature of Habit', desc: '7-day study streak.', req: (app) => app.getStudyStreak() >= 7 },
+        { id: 'dedicated', tier: 'streak', icon: '🧘', title: 'Dedicated Learner', desc: '30-day study streak.', req: (app) => app.getStudyStreak() >= 30 },
+        { id: 'session_stacker', tier: 'streak', icon: '📊', title: 'Session Stacker', desc: 'Complete 10 total sessions.', req: (app) => (app.userData.sessionsCompleted || 0) >= 10 },
+
+        // === 🕵️ SECRET / HIDDEN ===
+        { id: 'night_owl', tier: 'secret', icon: '🦉', title: 'Sigma Night Owl', desc: 'Study between 10 PM and 4 AM.', req: (app) => { const h = new Date().getHours(); return app.userData.sessionCount > 5 && (h >= 22 || h < 4); } },
+        { id: 'early_bird', tier: 'secret', icon: '🌅', title: 'Early Bird', desc: 'Study before 8 AM.', req: (app) => { const h = new Date().getHours(); return app.userData.sessionCount > 5 && h >= 5 && h < 8; } },
+        { id: 'weekend_warrior', tier: 'secret', icon: '🏕️', title: 'Weekend Warrior', desc: 'Study on a weekend.', req: (app) => { const d = new Date().getDay(); return app.userData.sessionCount > 5 && (d === 0 || d === 6); } },
+        { id: 'google_scholar', tier: 'secret', icon: '🌐', title: 'Google Scholar', desc: 'Sign in with Google.', req: (app) => app.isCloudConnected },
+        { id: 'chaotic_neutral', tier: 'secret', icon: '🌓', title: 'Chaotic Neutral', desc: 'Toggle dark mode 10 times.', req: (app) => (app.userData.darkModeToggleCount || 0) >= 10 },
+        { id: 'comeback_kid', tier: 'secret', icon: '🔄', title: "We're So Back", desc: 'Return after 7+ days away.', req: (app) => app.state.isComeback === true },
+        { id: 'portal_walker', tier: 'secret', icon: '🚶', title: 'Portal Walker', desc: 'Have progress in at least 2 levels.', req: (app) => (app.userData.otherLevelKnown || 0) >= 10 }
     ],
 
     checkTrophies() {
@@ -3376,18 +3462,95 @@ const app = {
     renderTrophies() {
         const container = document.getElementById('trophy-container');
         container.innerHTML = '';
-        this.trophyDefs.forEach(t => {
-            const earned = this.userData.trophies.includes(t.id);
-            const div = document.createElement('div');
-            div.className = `trophy-card ${earned ? 'earned' : ''}`;
-            div.innerHTML = `
-                <div class="trophy-badge">✅</div>
-                <div class="trophy-icon">${t.icon}</div>
-                <div class="trophy-title">${t.title}</div>
-                <div class="trophy-desc">${t.desc}</div>
-            `;
-            container.appendChild(div);
+        
+        const tiers = [
+            { name: '🎯 Progress & Mastery', key: 'progress' },
+            { name: '💀 Gen Z / Meme Trophies', key: 'meme' },
+            { name: '🔥 Consistency & Streaks', key: 'streak' },
+            { name: '🕵️ Secret / Hidden', key: 'secret' }
+        ];
+
+        tiers.forEach(tier => {
+            const tierTrophies = this.trophyDefs.filter(t => t.tier === tier.key);
+            if (tierTrophies.length === 0) return;
+
+            const header = document.createElement('div');
+            header.className = 'tier-header';
+            header.innerText = tier.name;
+            container.appendChild(header);
+
+            tierTrophies.forEach(t => {
+                const earned = this.userData.trophies.includes(t.id);
+                const isSecret = t.tier === 'secret';
+                const div = document.createElement('div');
+                
+                if (isSecret && !earned) {
+                    div.className = 'trophy-card secret-locked';
+                    div.innerHTML = `
+                        <div class="trophy-icon">🔒</div>
+                        <div class="trophy-title">???</div>
+                        <div class="trophy-desc">Keep exploring to unlock this secret trophy!</div>
+                    `;
+                } else {
+                    div.className = `trophy-card ${earned ? 'earned' : ''}`;
+                    div.innerHTML = `
+                        <div class="trophy-badge">✅</div>
+                        <div class="trophy-icon">${t.icon}</div>
+                        <div class="trophy-title">${t.title}</div>
+                        <div class="trophy-desc">${t.desc}</div>
+                    `;
+                }
+                container.appendChild(div);
+            });
         });
+    },
+
+    // === HELPER METHODS ===
+    
+    getStudyStreak() {
+        if (!this.userData.studyDates || this.userData.studyDates.length === 0) return 0;
+        const dates = [...new Set(this.userData.studyDates)].sort().reverse();
+        const today = new Date().toISOString().split('T')[0];
+        const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+        if (dates[0] !== today && dates[0] !== yesterday) return 0;
+        let streak = 1;
+        for (let i = 0; i < dates.length - 1; i++) {
+            const curr = new Date(dates[i]);
+            const prev = new Date(dates[i + 1]);
+            const diffDays = Math.round((curr - prev) / 86400000);
+            if (diffDays === 1) { streak++; } else { break; }
+        }
+        return streak;
+    },
+
+    recordStudyDate() {
+        const today = new Date().toISOString().split('T')[0];
+        if (!this.userData.studyDates) this.userData.studyDates = [];
+        if (this.userData.lastStudyDate && !this.userData.studyDates.includes(today)) {
+            const last = new Date(this.userData.lastStudyDate);
+            const diffDays = Math.floor((new Date() - last) / 86400000);
+            if (diffDays >= 7) this.state.isComeback = true;
+        }
+        if (!this.userData.studyDates.includes(today)) {
+            this.userData.studyDates.push(today);
+        }
+        this.userData.lastStudyDate = today;
+    },
+
+    async checkCrossLevelProgress() {
+        if (!this.userId || !this.db) return;
+        try {
+            const otherRef = doc(this.db, 'artifacts', 'german-a1-app', 'users', this.userId, 'progress', 'main');
+            const otherSnap = await getDoc(otherRef);
+            if (otherSnap.exists()) {
+                const otherData = otherSnap.data();
+                this.userData.otherLevelKnown = (otherData.known || []).length;
+                this.crossLevelChecked = true;
+                this.checkTrophies();
+            }
+        } catch(e) {
+            console.log('Cross-level check failed (non-critical):', e);
+        }
     },
 
     showToast(msg) {
@@ -3400,6 +3563,16 @@ const app = {
 
 window.app = app;
 window.onload = () => window.app.init();
+
+// Track total study time on page unload
+window.addEventListener('beforeunload', () => {
+    if (window.app && window.app.state.sessionStartTime) {
+        const elapsed = Date.now() - window.app.state.sessionStartTime;
+        window.app.userData.totalStudyTimeMs = (window.app.userData.totalStudyTimeMs || 0) + elapsed;
+        window.app.state.sessionStartTime = Date.now();
+        window.app.saveUserData();
+    }
+});
 
 </script>
 </body>
