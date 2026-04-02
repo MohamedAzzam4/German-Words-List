@@ -20,9 +20,17 @@ A2.html & B1.html: Planned for future development.
 
 Two Modes: Glossary View (with interactive column hiding for active recall) and Flashcard View (with 3D flip animations and spaced-repetition categorization).
 
+Flashcard Enhancements: 
+- "Still Learning" queue dynamically pushes failed cards to the end of the deck.
+- Dynamic filtering (All Cards vs. Still Learning only).
+- Card Face Swap (German front vs English front).
+- Instant UI sync: Completing a session instantly reflects ✅ checkmarks in the glossary without page reload.
+
+Article Quiz: A dedicated noun-drilling game that dynamically selects nouns requiring 'der/die/das' from the currently selected unit and tests the user. Navigating between units via the sidebar seamlessly refreshes the quiz for the newly selected module.
+
 Gamification: Progress bars, session counters, and a "Trophy Shelf" achievement system with 34 trophies across 4 tiers.
 
-Offline Fallback: If Firebase is unreachable or the user opts out of login, progress defaults to localStorage.
+Offline Fallback: If Firebase is unreachable or the user opts out of login, progress defaults to localStorage (and seamlessly merges online thanks to `{ merge: true }`).
 
 Text-to-Speech (TTS): Utilizes native browser speechSynthesis.
 
@@ -78,6 +86,8 @@ Tier 4 - Secret / Hidden (7 trophies): Night Owl, Early Bird, Weekend Warrior, G
 
 Cross-Level Trophies: Most trophies are shared (same IDs/conditions across levels). Level-specific: "A1 Conqueror" (A1 only), "B2 Boss" (B2 only) with adapted verb/noun/expression thresholds. "Portal Walker" reads from the OTHER level's Firestore doc via getDoc to detect multi-level progress.
 
+Multi-Earn Capability: Trophies with `multi: true` (like "Bro Actually Studied", "On Fire") can be earned repeatedly per threshold hit constraint. The count is displayed visually as an "x3" style badge. Trophy unlocking also invokes a synthesized Audio Chime sequence using the native Web Audio API.
+
 Key Tracking Fields (all backward-compatible via merge:true):
 - ttsCount: incremented in speak()
 - columnHideCount: incremented in hideTableColumn()
@@ -87,6 +97,7 @@ Key Tracking Fields (all backward-compatible via merge:true):
 - flashcardErrors{}: wordId -> failCount map in markCard()
 - sessionsCompleted: incremented when flashcard deck is fully completed
 - lastStudyDate: updated in recordStudyDate()
+- trophyCounts{}: dictionary mapping trophy IDs to the number of times earned.
 
 5. Key Challenges & Resolutions (Historical Context)
 
@@ -120,6 +131,18 @@ Solution: 1. Built a dynamic fallback parser (assigns "Vocab" if the type field 
 Problem: B2 required 68 modules (Anki-style numbering), overwhelming the sidebar UI.
 
 Solution: Dynamically parsed the module titles to extract "K1", "K2", etc., and generated sticky chapter headers in the sidebar to group the 68 modules cleanly.
+
+D. Gamification Scaling (Multi-Earn Bug)
+
+Problem: Multi-earn trophies were originally triggering repeatedly on every state change because their global requirement continually evaluated true once met (e.g., `sessionsCompleted >= 1`).
+
+Solution: Switched the threshold evaluation to strictly compare the global state against the integer inside `userData.trophyCounts{}`. Example: `sessionsCompleted > trophyCounts['bro_studied']`. This scales indefinitely without needing complex local state tracking for "has awarded this session" and is instantly predictable.
+
+E. Seamless Cross-Component Navigation
+
+Problem: Clicking a unit in the side panel forced the user back to the Glossary view, resetting their context if they were currently using Flashcards or Article Quiz.
+
+Solution: Intercepted `switchUnit()` to preserve the user's current `app.state.view`. If they are in the Article Quiz and click Unit 4, the Quiz seamlessly repopulates with Unit 4's data.
 
 6. Future Roadmap & Instructions for Continuing AI
 
